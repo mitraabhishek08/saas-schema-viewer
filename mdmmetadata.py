@@ -12,8 +12,20 @@ if "metadata" not in st.session_state:
     st.session_state.metadata = None
 
 
-def fetch_session_id(username, password):
-    login_url = 'https://dmp-us.informaticacloud.com/saas/public/core/v3/login'
+# Environment URLs mapping
+ENVIRONMENTS = {
+    "TechSales": {
+        "login_url": "https://dmp-us.informaticacloud.com/saas/public/core/v3/login",
+        "metadata_url": "https://usw1-mdm.dmp-us.informaticacloud.com/metadata/api/v2/objects/tenantModel/datamodel",
+    },
+    "Global Generic Demo": {
+        "login_url": "https://dm-us.informaticacloud.com/saas/public/core/v3/login",
+        "metadata_url": "https://use6-mdm.dm-us.informaticacloud.com/metadata/api/v2/objects/tenantModel/datamodel",
+    },
+}
+
+
+def fetch_session_id(username, password, login_url):
     login_payload = {"username": username, "password": password}
     headers = {"Content-Type": "application/json"}
     response = requests.post(login_url, json=login_payload, headers=headers)
@@ -22,10 +34,7 @@ def fetch_session_id(username, password):
     return data.get("userInfo", {}).get("sessionId")
 
 
-def fetch_metadata(session_id):
-    metadata_url = (
-        "https://usw1-mdm.dmp-us.informaticacloud.com/metadata/api/v2/objects/tenantModel/datamodel"
-    )
+def fetch_metadata(session_id, metadata_url):
     metadata_headers = {"IDS-SESSION-ID": session_id}
     response = requests.get(metadata_url, headers=metadata_headers)
     response.raise_for_status()
@@ -95,7 +104,6 @@ def build_relationships_dot(selected_entities, business_entities, relationships)
     dot += "  rankdir=LR;\n"
     dot += '  node [shape=record, style="filled,rounded", fillcolor="#FACDA0"];\n'
 
-    # Add nodes for selected entities only
     for name in selected_entities:
         dot += f'  "{name}";\n'
 
@@ -141,12 +149,10 @@ def build_single_entity_relationships_dot(entity_guid, business_entities, relati
     dot += "  rankdir=LR;\n"
     dot += '  node [shape=record, style="filled,rounded", fillcolor="#FACDA0"];\n'
 
-    # Add node for the selected entity
     dot += f'  "{entity_name}";\n'
 
     rel_graphs = [r for r in relationships if r.get("storage") == "graph"]
 
-    # Add related entities and edges
     for rel in rel_graphs:
         rel_name = rel.get("name", "")
         from_obj = rel.get("from", {})
@@ -157,12 +163,10 @@ def build_single_entity_relationships_dot(entity_guid, business_entities, relati
         from_guid = from_obj.get("businessEntity", {}).get("$ref")
         to_guid = to_obj.get("businessEntity", {}).get("$ref")
 
-        # Check if this relationship involves the single entity
         if entity_guid == from_guid or entity_guid == to_guid:
             from_name = guid_to_name.get(from_guid)
             to_name = guid_to_name.get(to_guid)
 
-            # Add related nodes if different from the main entity
             if from_guid != entity_guid:
                 dot += f'  "{from_name}";\n'
             if to_guid != entity_guid:
@@ -183,20 +187,25 @@ def build_single_entity_relationships_dot(entity_guid, business_entities, relati
 
 # -- Login --
 if not st.session_state.login_success:
+    selected_env = st.radio("Select Environment", options=["TechSales", "Global Generic Demo"], index=0)
+
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
     if st.button("Log In"):
         if not username or not password:
             st.error("Please enter both username and password.")
         else:
+            login_url = ENVIRONMENTS[selected_env]["login_url"]
+            metadata_url = ENVIRONMENTS[selected_env]["metadata_url"]
             try:
-                session_id = fetch_session_id(username, password)
+                session_id = fetch_session_id(username, password, login_url)
                 if session_id:
                     st.session_state.session_id = session_id
                     st.session_state.login_success = True
+                    st.session_state.metadata_url = metadata_url
                     st.success("Login successful!")
                     with st.spinner("Loading metadata, please wait..."):
-                        st.session_state.metadata = fetch_metadata(session_id)
+                        st.session_state.metadata = fetch_metadata(session_id, metadata_url)
                 else:
                     st.error("Failed to retrieve session ID.")
             except requests.exceptions.HTTPError as e:
@@ -205,7 +214,6 @@ if not st.session_state.login_success:
                 st.error(f"Error occurred: {e}")
 
 
-# List of GUIDs to exclude from dropdown
 EXCLUDE_GUIDS = {"p360.classification"}
 
 # -- After Login --
@@ -217,13 +225,10 @@ if st.session_state.login_success:
         business_entities = metadata.get("businessEntity", [])
         relationships = metadata.get("relationship", [])
 
-        # Filter business entities by storage == "ent" and exclude unwanted GUIDs
         filtered_entities = [
-            e for e in business_entities
-            if e.get("storage") == "ent" and e.get("guid") not in EXCLUDE_GUIDS
+            e for e in business_entities if e.get("storage") == "ent" and e.get("guid") not in EXCLUDE_GUIDS
         ]
 
-        # Map guid -> name for easy lookup
         name_guid_map = {}
         for i, ent in enumerate(filtered_entities):
             name = ent.get("name") or ent.get("guid") or f"Unknown-{i}"
@@ -241,28 +246,22 @@ if st.session_state.login_success:
             elif len(entity_choices) == 1:
                 entity_name = entity_choices[0]
                 guid = name_guid_map[entity_name]
-                target_entity = next(
-                    (e for e in filtered_entities if e.get("guid") == guid), None
-                )
+                target_entity = next((e for e in filtered_entities if e.get("guid") == guid), None)
                 if not target_entity:
                     st.error(f"Entity with guid '{guid}' not found.")
                 else:
-                    # Show detailed ER diagram
                     dot, root_name = build_dot_for_entity(target_entity)
                     st.subheader(f"Entity: {root_name}")
                     st.graphviz_chart(dot)
 
-                    # Show relationships related to this entity
-                    rel_dot = build_single_entity_relationships_dot(
-                        guid, filtered_entities, relationships
-                    )
+                    rel_dot = build_single_entity_relationships_dot(guid, filtered_entities, relationships)
                     st.subheader("Relationships of this entity")
                     st.graphviz_chart(rel_dot)
             else:
-                # Multiple entities: show relationships graph without details
                 dot = build_relationships_dot(entity_choices, filtered_entities, relationships)
                 st.subheader("Relationships between selected entities")
                 st.graphviz_chart(dot)
+
 
 if not st.session_state.login_success:
     st.info("Please log in to access and visualize MDM metadata.")
