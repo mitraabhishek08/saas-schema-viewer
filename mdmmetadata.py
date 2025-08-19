@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 
 st.title("Schema Viewer")
+st.set_page_config(page_title="Schema Viewer", page_icon="🌐", layout="centered")
 
 # Initialize session state variables
 if "session_id" not in st.session_state:
@@ -12,7 +13,6 @@ if "metadata" not in st.session_state:
     st.session_state.metadata = None
 
 
-# Environment URLs mapping
 ENVIRONMENTS = {
     "TechSales": {
         "login_url": "https://dmp-us.informaticacloud.com/saas/public/core/v3/login",
@@ -45,8 +45,9 @@ def build_dot_for_entity(target_entity):
     root_name = target_entity.get("name", "Unknown")
     fields = target_entity.get("field", [])
 
-    direct_lookups = []
-    field_groups = {}
+    simple_fields = []
+    field_groups_names = []
+    unique_lookups = set()
 
     for field in fields:
         label_obj = field.get("label", {})
@@ -55,40 +56,42 @@ def build_dot_for_entity(target_entity):
             continue
 
         if "codeField" in field:
-            if field_name not in direct_lookups:
-                direct_lookups.append(field_name)
-
+            unique_lookups.add(field_name)
         elif field.get("allowMany") is True:
-            if field_name not in field_groups:
-                field_groups[field_name] = []
+            # Collect only field group name here (no nested lookups listed)
+            field_groups_names.append(field_name)
+            # Still add nested lookups to unique_lookups so nodes get created and connected
             nested_fields = field.get("field", [])
             for nf in nested_fields:
                 nf_label = nf.get("label", {})
                 nf_name = nf_label.get("en") if nf_label else None
                 if nf_name and "codeField" in nf:
-                    if nf_name not in field_groups[field_name]:
-                        field_groups[field_name].append(nf_name)
+                    unique_lookups.add(nf_name)
+        else:
+            simple_fields.append(field_name)
 
-    dot = "digraph ER {\n"
-    dot += "  rankdir=LR;\n"
-    dot += '  node [shape=record, style="filled,rounded"];\n'
-    dot += f'  "{root_name}" [label="{root_name}", fillcolor=lightblue];\n'
+    # Compose FG lines with only field group names (no nested lookup names)
+    fg_lines = [f"⤷ FG: {fg_name}" for fg_name in field_groups_names]
+    fg_text = "\\l".join(fg_lines) + ("\\l" if fg_lines else "")
 
-    for lookup in direct_lookups:
-        dot += f'  "{lookup}" [label="{lookup}", fillcolor=lightyellow];\n'
-        dot += f'  "{root_name}" -> "{lookup}" [label="lookup"];\n'
+    simple_fields_str = "\\l".join(simple_fields) + ("\\l" if simple_fields else "")
 
-    for fg_name, fg_lookups in field_groups.items():
-        dot += f'  "{fg_name}" [label="{fg_name}", fillcolor="#B39EB5"];\n'
-        dot += f'  "{root_name}" -> "{fg_name}" [label="field group"];\n'
+    # Build Graphviz record label with two compartments: FG names and simple fields
+    label = f'{{<f0> {root_name} | <f1> {simple_fields_str} {fg_text}}}'
 
-        for nested_lookup in fg_lookups:
-            nested_lookup_node = f"{fg_name}::{nested_lookup}"
-            dot += f'  "{nested_lookup_node}" [label="{nested_lookup}", fillcolor=orange];\n'
-            dot += f'  "{fg_name}" -> "{nested_lookup_node}" [label="lookup"];\n'
+    dot = 'digraph ER {\n'
+    dot += '  rankdir=LR;\n'
+    dot += '  node [shape=record, style="filled,rounded", margin=0.1, fontname="Arial"];\n'
+    dot += f'  "{root_name}" [label="{label}", fillcolor="#E4DAF0", color="#C1C1E6", fontweight="bold", fontsize=16];\n'
 
-    dot += "}"
+    # Add unique lookup nodes and edges from entity's header <f0>
+    for lookup in sorted(unique_lookups):
+        dot += f'  "{lookup}" [label="{lookup}", fillcolor=lightyellow, color=goldenrod, fontsize=14];\n'
+        dot += f'  "{root_name}":f0 -> "{lookup}" [label="lookup", fontsize=12, fontname="Arial", color="#8B8B00", arrowsize=0.8];\n'
+
+    dot += '}\n'
     return dot, root_name
+
 
 
 def build_relationships_dot(selected_entities, business_entities, relationships):
@@ -100,14 +103,14 @@ def build_relationships_dot(selected_entities, business_entities, relationships)
 
     selected_names = set(selected_entities)
 
-    dot = "digraph Relationships {\n"
-    dot += "  rankdir=LR;\n"
-    dot += '  node [shape=record, style="filled,rounded", fillcolor="#FACDA0"];\n'
+    dot = 'digraph Relationships {\n'
+    dot += '  rankdir=LR;\n'
+    dot += '  node [shape=record, style="filled,rounded", fillcolor="#FACDA0", fontname="Arial", fontsize=14, color="#D2691E"];\n'
 
     for name in selected_entities:
         dot += f'  "{name}";\n'
 
-    rel_graphs = [r for r in relationships if r.get("storage") == "graph"]
+    rel_graphs = [r for r in relationships if r.get("storage") in ("graph", "rel")]
 
     for rel in rel_graphs:
         rel_name = rel.get("name", "")
@@ -124,15 +127,15 @@ def build_relationships_dot(selected_entities, business_entities, relationships)
 
         if from_name in selected_names and to_name in selected_names:
             if direction == "FORWARD":
-                dot += f'  "{from_name}" -> "{to_name}" [label="{rel_name}"];\n'
+                dot += f'  "{from_name}" -> "{to_name}" [label="{rel_name}", fontsize=12, fontname="Arial", color="#A0522D", arrowsize=1];\n'
             elif direction == "BACKWARD":
-                dot += f'  "{to_name}" -> "{from_name}" [label="{rel_name}"];\n'
+                dot += f'  "{to_name}" -> "{from_name}" [label="{rel_name}", fontsize=12, fontname="Arial", color="#A0522D", arrowsize=1];\n'
             elif direction == "BIDIRECTED":
-                dot += f'  "{from_name}" -> "{to_name}" [dir="both", label="{rel_name}"];\n'
+                dot += f'  "{from_name}" -> "{to_name}" [dir="both", label="{rel_name}", fontsize=12, fontname="Arial", color="#A0522D", arrowsize=1];\n'
             else:
-                dot += f'  "{from_name}" -> "{to_name}" [label="{rel_name}"];\n'
+                dot += f'  "{from_name}" -> "{to_name}" [label="{rel_name}", fontsize=12, fontname="Arial", color="#A0522D", arrowsize=1];\n'
 
-    dot += "}"
+    dot += '}\n'
     return dot
 
 
@@ -145,13 +148,13 @@ def build_single_entity_relationships_dot(entity_guid, business_entities, relati
 
     entity_name = guid_to_name.get(entity_guid, "Unknown")
 
-    dot = "digraph SingleEntityRelationships {\n"
-    dot += "  rankdir=LR;\n"
-    dot += '  node [shape=record, style="filled,rounded", fillcolor="#FACDA0"];\n'
+    dot = 'digraph SingleEntityRelationships {\n'
+    dot += '  rankdir=LR;\n'
+    dot += '  node [shape=record, style="filled,rounded", fillcolor="#FACDA0", fontname="Arial", fontsize=14, color="#D2691E"];\n'
 
     dot += f'  "{entity_name}";\n'
 
-    rel_graphs = [r for r in relationships if r.get("storage") == "graph"]
+    rel_graphs = [r for r in relationships if r.get("storage") in ("graph", "rel")]
 
     for rel in rel_graphs:
         rel_name = rel.get("name", "")
@@ -173,17 +176,19 @@ def build_single_entity_relationships_dot(entity_guid, business_entities, relati
                 dot += f'  "{to_name}";\n'
 
             if direction == "FORWARD":
-                dot += f'  "{from_name}" -> "{to_name}" [label="{rel_name}"];\n'
+                dot += f'  "{from_name}" -> "{to_name}" [label="{rel_name}", fontsize=12, fontname="Arial", color="#A0522D", arrowsize=1];\n'
             elif direction == "BACKWARD":
-                dot += f'  "{to_name}" -> "{from_name}" [label="{rel_name}"];\n'
+                dot += f'  "{to_name}" -> "{from_name}" [label="{rel_name}", fontsize=12, fontname="Arial", color="#A0522D", arrowsize=1];\n'
             elif direction == "BIDIRECTED":
-                dot += f'  "{from_name}" -> "{to_name}" [dir="both", label="{rel_name}"];\n'
+                dot += f'  "{from_name}" -> "{to_name}" [dir="both", label="{rel_name}", fontsize=12, fontname="Arial", color="#A0522D", arrowsize=1];\n'
             else:
-                dot += f'  "{from_name}" -> "{to_name}" [label="{rel_name}"];\n'
+                dot += f'  "{from_name}" -> "{to_name}" [label="{rel_name}", fontsize=12, fontname="Arial", color="#A0522D", arrowsize=1];\n'
 
-    dot += "}"
+    dot += '}\n'
     return dot
 
+
+EXCLUDE_GUIDS = {"p360.classification"}
 
 # -- Login --
 if not st.session_state.login_success:
@@ -213,9 +218,6 @@ if not st.session_state.login_success:
             except Exception as e:
                 st.error(f"Error occurred: {e}")
 
-
-EXCLUDE_GUIDS = {"p360.classification"}
-
 # -- After Login --
 if st.session_state.login_success:
     if st.session_state.metadata is None:
@@ -237,7 +239,7 @@ if st.session_state.login_success:
         entity_names = list(name_guid_map.keys())
 
         entity_choices = st.multiselect(
-            "Select entities to visualize", options=entity_names, default=entity_names[:3]
+            "Select entities to visualize", options=entity_names, default=entity_names[:1]
         )
 
         if st.button("Visualize MDM Schema"):
@@ -261,7 +263,6 @@ if st.session_state.login_success:
                 dot = build_relationships_dot(entity_choices, filtered_entities, relationships)
                 st.subheader("Relationships between selected entities")
                 st.graphviz_chart(dot)
-
 
 if not st.session_state.login_success:
     st.info("Please log in to access and visualize MDM metadata.")
